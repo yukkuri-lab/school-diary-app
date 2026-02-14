@@ -5,6 +5,7 @@ import tailwindcss from '@tailwindcss/vite'
 
 // https://vitejs.dev/config/
 export default defineConfig({
+    base: '/school-diary-app/',
     plugins: [react(), tailwindcss()],
     define: {
         __firebase_config: JSON.stringify(JSON.stringify({

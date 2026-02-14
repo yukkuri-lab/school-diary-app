@@ -405,6 +405,29 @@ export default function App() {
     const [diaryEntries, setDiaryEntries] = useState([]);
     const [isTracingMode, setIsTracingMode] = useState(false);
 
+    useEffect(() => {
+        const load = () => speechSynthesis.getVoices();
+        speechSynthesis.onvoiceschanged = load;
+        load();
+        return () => {
+            speechSynthesis.onvoiceschanged = null;
+        };
+    }, []);
+
+    const getPreferredVoice = () => {
+        const voices = speechSynthesis.getVoices();
+        return (
+            voices.find(v => v.lang === "ja-JP" && v.name.includes("Google")) ||
+            voices.find(v => v.lang === "ja-JP" && v.name.includes("Kyoko")) ||
+            voices.find(v => v.lang === "ja-JP" && v.name.includes("O-Ren")) ||
+            voices.find(v => v.lang === "ja-JP")
+        );
+    };
+
+    const onSpeak = () => {
+        speakSentence(finalSentence);
+    };
+
     const today = new Date();
     const dateString = `${today.getMonth() + 1}月 ${today.getDate()}日`;
     const dayString = ['にちようび', 'げつようび', 'かようび', 'すいようび', 'もくようび', 'きんようび', 'どようび'][today.getDay()];
@@ -590,11 +613,16 @@ export default function App() {
 
         // Function to use browser's native TTS
         const speakNative = (txt) => {
+            setStatusMessage('ブラウザのこえで よみます...');
             const utterance = new SpeechSynthesisUtterance(txt);
             utterance.lang = 'ja-JP';
-            utterance.rate = 0.9; // Slightly slower feels more natural for reading
+            utterance.rate = 0.9;
+            utterance.pitch = 1.0;
+            const voice = getPreferredVoice();
+            if (voice) utterance.voice = voice;
             window.speechSynthesis.speak(utterance);
             setIsProcessing(false);
+            setTimeout(() => setStatusMessage(''), 2000);
         };
 
         if (!API_KEY) {
@@ -604,10 +632,15 @@ export default function App() {
         }
 
         try {
+            setStatusMessage('AIの 優しいこえを つくっています...');
             const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${API_KEY}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model: "gemini-2.5-flash-preview-tts", contents: [{ parts: [{ text: `Say gently: ${text}` }] }], generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } } } })
+                body: JSON.stringify({
+                    model: "gemini-2.5-flash-preview-tts",
+                    contents: [{ parts: [{ text: text }] }],
+                    generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } } }
+                })
             });
 
             if (!response.ok) throw new Error("API response was not ok");
@@ -621,13 +654,15 @@ export default function App() {
                 const sampleRate = parseInt(inlineData.mimeType.match(/rate=(\d+)/)?.[1] || "24000");
                 const wavBlob = pcmToWav(pcmData, sampleRate);
                 const audio = new Audio(URL.createObjectURL(wavBlob));
+                audio.playbackRate = 0.9; // Gentle tone adjustment
                 audio.play();
-                audio.onended = () => setIsProcessing(false);
+                audio.onended = () => { setIsProcessing(false); setStatusMessage(''); };
             } else {
                 throw new Error("No audio data in response");
             }
         } catch (error) {
             console.error("TTS API Error, falling back to native:", error);
+            setStatusMessage('エラー: ブラウザのこえをつかいます');
             speakNative(text);
         } finally {
             // setIsProcessing(false) is handled in speakNative or audio.onended/error catch
@@ -746,7 +781,7 @@ export default function App() {
 
     return (
         <div className="min-h-screen bg-[#FDFCFB] text-slate-900 font-sans antialiased pb-10 overflow-x-hidden">
-            {isTracingMode && <TracingCanvas text={finalSentence} onCancel={() => setIsTracingMode(false)} onSpeak={() => speakSentence()} onSave={(data) => { setUserHandwriting(data); setIsTracingMode(false); }} />}
+            {isTracingMode && <TracingCanvas text={finalSentence} onCancel={() => setIsTracingMode(false)} onSpeak={onSpeak} onSave={(data) => { setUserHandwriting(data); setIsTracingMode(false); }} />}
 
             <nav className="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-100 px-6 py-4 flex justify-between items-center shadow-sm">
                 <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView('home')}>
