@@ -616,6 +616,14 @@ export default function App() {
         if (!text) return;
         setIsProcessing(true);
 
+        // Pre-initialize Audio to unlock mobile auto-play policy
+        const audio = new Audio();
+        // Silent mp3 to "bless" the audio element synchronously
+        audio.src = 'data:audio/mp3;base64,SUQzBAAAAAABAFRYWFgAAAASAAADbWFqb3JfYnJhbmQAbXA0MgBUWFhYAAAAEQAAA21pbm9yX3ZlcnNpb24AMABUWFhYAAAAHAAAA2NvbXBhdGlibGVfYnJhbmRzAGlzb21tcDQyAFRTU0UAAAADAAADbG1m//uQZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWgAAAA0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABYaW5nAAAAHgAAAAUAAABuAAzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzOhmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZm//uSZAgAAABAAAAAAAAAAABAAAAAAAAAAAAIxAAAAAAAAAAAAIkEAAAAAAA';
+        audio.volume = 0;
+        audio.play().catch(() => { /* Ignore initial verify play errors */ });
+
+
         // Function to use browser's native TTS
         const speakNative = (txt) => {
             setStatusMessage('ブラウザのこえで よみます...');
@@ -648,7 +656,8 @@ export default function App() {
 
                 const data = await response.json();
                 if (data.audioContent) {
-                    const audio = new Audio(`data:audio/mp3;base64,${data.audioContent}`);
+                    audio.src = `data:audio/mp3;base64,${data.audioContent}`;
+                    audio.volume = 1.0;
                     audio.play();
                     audio.onended = () => { setIsProcessing(false); setStatusMessage(''); };
                     return;
@@ -689,8 +698,9 @@ export default function App() {
                 for (let i = 0; i < binaryString.length; i++) pcmData[i] = binaryString.charCodeAt(i);
                 const sampleRate = parseInt(inlineData.mimeType.match(/rate=(\d+)/)?.[1] || "24000");
                 const wavBlob = pcmToWav(pcmData, sampleRate);
-                const audio = new Audio(URL.createObjectURL(wavBlob));
+                audio.src = URL.createObjectURL(wavBlob);
                 audio.playbackRate = 0.9; // Gentle tone adjustment
+                audio.volume = 1.0;
                 audio.play();
                 audio.onended = () => { setIsProcessing(false); setStatusMessage(''); };
             } else {
