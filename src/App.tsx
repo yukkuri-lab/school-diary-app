@@ -408,7 +408,20 @@ export default function App() {
     const [diaryEntries, setDiaryEntries] = useState([]);
     const [isTracingMode, setIsTracingMode] = useState(false);
 
-    const audioRef = useRef(new Audio());
+    const audioContextRef = useRef<AudioContext | null>(null);
+
+    // Initialize AudioContext
+    useEffect(() => {
+        const AudioContextClass = (window.AudioContext || (window as any).webkitAudioContext);
+        if (AudioContextClass) {
+            audioContextRef.current = new AudioContext();
+        }
+        return () => {
+            if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+                audioContextRef.current.close();
+            }
+        };
+    }, []);
 
     useEffect(() => {
         const load = () => speechSynthesis.getVoices();
@@ -418,6 +431,27 @@ export default function App() {
             speechSynthesis.onvoiceschanged = null;
         };
     }, []);
+
+    // Explicit Audio Unlock Function
+    const unlockAudio = async () => {
+        if (audioContextRef.current) {
+            try {
+                const ctx = audioContextRef.current;
+                if (ctx.state === 'suspended') {
+                    await ctx.resume();
+                    console.log("AudioContext resumed by user interaction");
+                }
+                // Play tiny silent buffer to ensure "blessed" state
+                const buffer = ctx.createBuffer(1, 1, 22050);
+                const source = ctx.createBufferSource();
+                source.buffer = buffer;
+                source.connect(ctx.destination);
+                source.start(0);
+            } catch (e) {
+                console.error("Audio unlock failed", e);
+            }
+        }
+    };
 
     const getPreferredVoice = () => {
         const voices = speechSynthesis.getVoices();
@@ -613,21 +647,52 @@ export default function App() {
         } finally { setIsProcessing(false); setStatusMessage(''); }
     };
 
+    const playAudioData = async (base64Data) => {
+        if (!audioContextRef.current) return;
+        const ctx = audioContextRef.current;
+
+        try {
+            if (ctx.state === 'suspended') await ctx.resume();
+
+            const binaryString = window.atob(base64Data);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) bytes[i] = binaryString.charCodeAt(i);
+            const arrayBuffer = bytes.buffer;
+
+            const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+            const source = ctx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(ctx.destination);
+            source.onended = () => { setIsProcessing(false); setStatusMessage(''); };
+            source.start(0);
+        } catch (error) {
+            console.error("Web Audio API Error:", error);
+            alert(`Audio Error: ${error.message}`);
+            setIsProcessing(false);
+        }
+    };
+
     const speakSentence = async (textToSpeak) => {
         const text = textToSpeak || finalSentence;
         if (!text) return;
         setIsProcessing(true);
 
-        // Pre-initialize Audio to unlock mobile auto-play policy
-        // Pre-initialize Audio to unlock mobile auto-play policy
-        const audio = audioRef.current;
-        // Silent mp3 to "bless" the audio element synchronously
-        audio.src = 'data:audio/mp3;base64,SUQzBAAAAAABAFRYWFgAAAASAAADbWFqb3JfYnJhbmQAbXA0MgBUWFhYAAAAEQAAA21pbm9yX3ZlcnNpb24AMABUWFhYAAAAHAAAA2NvbXBhdGlibGVfYnJhbmRzAGlzb21tcDQyAFRTU0UAAAADAAADbG1m//uQZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWgAAAA0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABYaW5nAAAAHgAAAAUAAABuAAzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzOhmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZm//uSZAgAAABAAAAAAAAAAABAAAAAAAAAAAAIxAAAAAAAAAAAAIkEAAAAAAA';
-        audio.volume = 0.01; // Non-zero volume to ensure browser treats it as interaction
-        audio.play().catch((e) => {
-            console.warn("Silent play failed", e);
-            // alert(`Silent play error: ${e.message}`); // Optional debug
-        });
+        // 1. Silent Unlock (Crucial for iOS)
+        if (audioContextRef.current) {
+            try {
+                const ctx = audioContextRef.current;
+                if (ctx.state === 'suspended') await ctx.resume();
+                // Play a tiny silent buffer
+                const buffer = ctx.createBuffer(1, 1, 22050);
+                const source = ctx.createBufferSource();
+                source.buffer = buffer;
+                source.connect(ctx.destination);
+                source.start(0);
+            } catch (e) {
+                console.warn("Audio unlock failed", e);
+            }
+        }
 
 
         // Function to use browser's native TTS
@@ -662,10 +727,7 @@ export default function App() {
 
                 const data = await response.json();
                 if (data.audioContent) {
-                    audio.src = `data:audio/mp3;base64,${data.audioContent}`;
-                    audio.volume = 1.0;
-                    audio.play();
-                    audio.onended = () => { setIsProcessing(false); setStatusMessage(''); };
+                    await playAudioData(data.audioContent);
                     return;
                 } else {
                     throw new Error("No audio content in response");
@@ -705,14 +767,16 @@ export default function App() {
                 for (let i = 0; i < binaryString.length; i++) pcmData[i] = binaryString.charCodeAt(i);
                 const sampleRate = parseInt(inlineData.mimeType.match(/rate=(\d+)/)?.[1] || "24000");
                 const wavBlob = pcmToWav(pcmData, sampleRate);
-                audio.src = URL.createObjectURL(wavBlob);
-                audio.playbackRate = 0.9; // Gentle tone adjustment
-                audio.volume = 1.0;
-                audio.play().catch(e => {
-                    alert(`Audio Play Error: ${e.message}`);
-                    setIsProcessing(false);
-                });
-                audio.onended = () => { setIsProcessing(false); setStatusMessage(''); };
+                const arrayBuffer = await wavBlob.arrayBuffer();
+                const ctx = audioContextRef.current;
+                if (ctx) {
+                    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+                    const source = ctx.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(ctx.destination);
+                    source.onended = () => { setIsProcessing(false); setStatusMessage(''); };
+                    source.start(0);
+                }
             } else {
                 throw new Error("No audio data in response");
             }
@@ -824,6 +888,7 @@ export default function App() {
         }
 
         // Standard Navigation
+        unlockAudio(); // Aggressive unlock on navigation
         if (stepId === 'when') setCurrentStep(findStepIndex('what'));
         else if (stepId === 'what') {
             if (value === 'やすみじかん') setCurrentStep(findStepIndex('what_detail'));
@@ -847,7 +912,7 @@ export default function App() {
                 {view !== 'home' && <button onClick={() => setView('home')} className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center text-slate-400 active:scale-90"><X size={18} /></button>}
             </nav>
 
-            <main className="max-w-xl mx-auto px-6 mt-6">
+            <main className="max-w-xl mx-auto px-4 mt-2">
                 {view === 'home' && (
                     <div className="space-y-6 animate-in fade-in zoom-in-95 duration-500">
                         <div className="bg-white rounded-[2.8rem] p-8 shadow-xl shadow-slate-200/40 border border-slate-50 flex flex-col items-center text-center relative overflow-hidden">
@@ -855,7 +920,29 @@ export default function App() {
                             <div className="w-16 h-16 bg-blue-50 text-blue-500 rounded-2xl flex items-center justify-center mb-3"><Calendar size={32} /></div>
                             <p className="text-slate-400 font-bold text-sm mb-1">{dayString}</p>
                             <h2 className="text-3xl font-black text-slate-800 mb-6 tracking-tight">{dateString}</h2>
-                            <button onClick={() => { setAnswers({ when: '', what: '', what_detail: '', friend_names: [], who: '', feeling: '' }); setCurrentStep(0); setUserHandwriting(null); setView('step'); }} className="w-full bg-orange-500 text-white rounded-[1.8rem] py-6 flex items-center justify-center gap-4 shadow-xl shadow-orange-200 active:scale-[0.98] transition-all"><PenTool size={24} /><span className="text-xl font-black">にっきを かく</span></button>
+                            <button onClick={() => { unlockAudio(); setAnswers({ when: '', what: '', what_detail: '', friend_names: [], who: '', feeling: '' }); setCurrentStep(0); setUserHandwriting(null); setView('step'); }} className="w-full bg-orange-500 text-white rounded-[1.8rem] py-6 flex items-center justify-center gap-4 shadow-xl shadow-orange-200 active:scale-[0.98] transition-all"><PenTool size={24} /><span className="text-xl font-black">にっきを かく</span></button>
+                        </div>
+                        {/* Audio Debug / Test Button */}
+                        <div className="flex justify-center">
+                            <button onClick={async () => {
+                                await unlockAudio();
+                                // Test Tone
+                                if (audioContextRef.current) {
+                                    const ctx = audioContextRef.current;
+                                    const osc = ctx.createOscillator();
+                                    const gain = ctx.createGain();
+                                    osc.type = 'sine';
+                                    osc.frequency.setValueAtTime(440, ctx.currentTime);
+                                    gain.gain.setValueAtTime(0.1, ctx.currentTime);
+                                    osc.connect(gain);
+                                    gain.connect(ctx.destination);
+                                    osc.start();
+                                    osc.stop(ctx.currentTime + 0.2);
+                                    alert(`Sound Test: ${ctx.state}`);
+                                } else {
+                                    alert("No AudioContext");
+                                }
+                            }} className="text-xs bg-slate-100 text-slate-400 px-3 py-1 rounded-full flex items-center gap-1"><Volume2 size={12} /> テスト</button>
                         </div>
                         <div className="space-y-4">
                             <div className="flex justify-between items-center px-2"><h3 className="font-black text-slate-400 text-xs tracking-widest uppercase flex items-center gap-2"><History size={14} /> おもいで</h3><button onClick={() => setView('history')} className="text-blue-500 text-sm font-bold">すべてみる</button></div>
@@ -873,7 +960,7 @@ export default function App() {
                 )}
 
                 {view === 'step' && (
-                    <div className="space-y-8 animate-in fade-in slide-in-from-right-4 duration-500">
+                    <div className="space-y-2 animate-in fade-in slide-in-from-right-4 duration-500">
                         <div className="flex justify-between items-center px-2">
                             {/* Subject Mode Indicator or Standard Progress */}
                             {isSubjectMode ? (
@@ -896,7 +983,7 @@ export default function App() {
                                 )}
                             </div>
                         </div>
-                        <div className="bg-white rounded-[2.5rem] p-8 shadow-xl border border-slate-50 min-h-[480px] flex flex-col">
+                        <div className="bg-white rounded-3xl px-5 py-4 shadow-xl border border-slate-50 min-h-[50dvh] flex flex-col">
                             {isSubjectMode && currentStep >= 2 ? (
                                 // Subject Mode Specific Render
                                 (() => {
@@ -905,14 +992,14 @@ export default function App() {
                                     if (!sStep) return null;
                                     return (
                                         <div className="flex flex-col h-full">
-                                            <h2 className="text-3xl font-black mb-8 text-slate-800 tracking-tight">{sStep.question}</h2>
-                                            <div className="flex-1 overflow-y-auto grid grid-cols-1 gap-4 content-start">
+                                            <h2 className="text-xl font-black mb-4 text-slate-800 tracking-tight">{sStep.question}</h2>
+                                            <div className="flex-1 overflow-y-auto grid grid-cols-1 gap-2 content-start">
                                                 {sStep.options.map((option) => (
                                                     <button
                                                         key={option.label}
                                                         onClick={() => handleChoice(sStep.id, option.label)}
                                                         className={`
-                                                            p-6 text-2xl font-bold rounded-2xl transition-all shadow-sm border-2 text-left
+                                                            p-4 text-lg font-bold rounded-xl transition-all shadow-sm border-2 text-left
                                                             ${answers[sStep.id] === option.label
                                                                 ? 'bg-blue-100 border-blue-500 text-blue-800'
                                                                 : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50 hover:border-blue-300'
@@ -923,8 +1010,8 @@ export default function App() {
                                                     </button>
                                                 ))}
                                             </div>
-                                            <div className="mt-6 p-6 bg-orange-50/50 rounded-2xl border-2 border-dashed border-orange-100 min-h-[100px] flex items-center justify-center">
-                                                <p className="text-xl text-slate-700 font-bold text-center leading-relaxed">
+                                            <div className="mt-2 p-3 bg-orange-50/50 rounded-xl border-2 border-dashed border-orange-100 min-h-0 flex items-center justify-center">
+                                                <p className="text-base text-slate-700 font-bold text-center leading-relaxed">
                                                     {(() => {
                                                         const detail = answers.what_detail || '_____';
 
@@ -962,16 +1049,16 @@ export default function App() {
                             ) : (
                                 // Standard Render
                                 <>
-                                    <h2 className="text-3xl font-black mb-8 text-slate-800 tracking-tight">{STEPS[currentStep].label}</h2>
+                                    <h2 className="text-xl font-black mb-4 text-slate-800 tracking-tight">{STEPS[currentStep].label}</h2>
                                     <div className="flex-1 overflow-y-auto pr-2 pb-4 scrollbar-hide">
                                         <div className={`grid gap-3 ${STEPS[currentStep].id === 'when' ? 'grid-cols-1' : 'grid-cols-2'}`}>
                                             {STEPS[currentStep].suggestions.map(s => {
                                                 const isSelected = STEPS[currentStep].id === 'friend_names' ? answers.friend_names?.includes(s.label) : answers[STEPS[currentStep].id] === s.label;
                                                 return (
-                                                    <button key={s.label} onClick={() => STEPS[currentStep].id === 'friend_names' ? toggleFriend(s.label) : handleChoice(STEPS[currentStep].id, s.label)} className={`rounded-[1.4rem] flex flex-col items-center justify-center gap-2 transition-all border-2 ${isSelected ? 'bg-blue-50 border-blue-400 ring-4 ring-blue-50 text-blue-600' : 'bg-white border-slate-50 text-slate-600 hover:border-slate-100'} ${STEPS[currentStep].id === 'when' ? 'py-8' : 'p-4 shadow-sm'}`}>
+                                                    <button key={s.label} onClick={() => STEPS[currentStep].id === 'friend_names' ? toggleFriend(s.label) : handleChoice(STEPS[currentStep].id, s.label)} className={`rounded-xl flex flex-col items-center justify-center gap-1 transition-all border-2 ${isSelected ? 'bg-blue-50 border-blue-400 ring-4 ring-blue-50 text-blue-600' : 'bg-white border-slate-50 text-slate-600 hover:border-slate-100'} ${STEPS[currentStep].id === 'when' ? 'py-4' : 'p-3 shadow-sm'}`}>
                                                         {isSelected && STEPS[currentStep].id === 'friend_names' && <div className="absolute top-2 right-2 w-6 h-6 bg-blue-500 rounded-full flex items-center justify-center text-white shadow-md"><Check size={14} strokeWidth={4} /></div>}
                                                         {s.icon && <div>{typeof s.icon === 'string' ? <span className="text-3xl">{s.icon}</span> : s.icon}</div>}
-                                                        <span className={`${STEPS[currentStep].id === 'when' ? 'text-3xl' : 'text-base'} font-bold`}>{s.label}</span>
+                                                        <span className={`${STEPS[currentStep].id === 'when' ? 'text-xl' : 'text-sm'} font-bold`}>{s.label}</span>
                                                     </button>
                                                 );
                                             })}
@@ -981,7 +1068,7 @@ export default function App() {
                             )}
                         </div>
                         <div className="flex gap-4">
-                            <button onClick={() => { if (currentStep === findStepIndex('friend_names')) setCurrentStep(findStepIndex('what_detail')); else if (currentStep > 0) setCurrentStep(currentStep - 1); }} className="h-16 w-16 bg-white rounded-2xl flex items-center justify-center text-slate-300 border border-slate-100 active:scale-95 shadow-sm"><ChevronLeft size={28} /></button>
+                            <button onClick={() => { if (currentStep === findStepIndex('friend_names')) setCurrentStep(findStepIndex('what_detail')); else if (currentStep > 0) setCurrentStep(currentStep - 1); }} className="h-14 w-14 bg-white rounded-2xl flex items-center justify-center text-slate-300 border border-slate-100 active:scale-95 shadow-sm"><ChevronLeft size={28} /></button>
                             {((isSubjectMode && currentStep === 2) || (STEPS[currentStep].id === 'friend_names')) && (
                                 <button
                                     onClick={() => {
@@ -989,7 +1076,7 @@ export default function App() {
                                         else setCurrentStep(findStepIndex('feeling'));
                                     }}
                                     disabled={isSubjectMode ? !answers.feeling : answers.friend_names?.length === 0}
-                                    className={`h-16 flex-1 rounded-2xl font-black text-lg flex items-center justify-center gap-3 shadow-xl ${(isSubjectMode ? answers.feeling : answers.friend_names?.length > 0)
+                                    className={`h-14 flex-1 rounded-2xl font-black text-lg flex items-center justify-center gap-3 shadow-xl ${(isSubjectMode ? answers.feeling : answers.friend_names?.length > 0)
                                         ? 'bg-blue-600 text-white shadow-blue-200'
                                         : 'bg-slate-200 text-white cursor-not-allowed'
                                         }`}
