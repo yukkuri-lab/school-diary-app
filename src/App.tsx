@@ -39,6 +39,8 @@ const db = getFirestore(app);
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'school-diary-app';
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY || ""; // 実行環境のAPIキーを使用
+const GOOGLE_CLOUD_API_KEY = import.meta.env.VITE_GOOGLE_CLOUD_API_KEY || ""; // Google Cloud TTS API Key
+
 
 const STEPS = [
     {
@@ -217,10 +219,11 @@ const SUBJECT_CONFIG = {
                 question: 'なにを した？',
                 options: [
                     { label: 'はしった', text: 'はしりました' },
-                    { label: 'ボールあそび', text: 'ボールあそびを しました' },
+                    { label: 'サッカー', text: 'サッカーを しました' },
+                    { label: 'ドッジボール', text: 'ドッジボールを しました' },
+                    { label: 'とびばこ', text: 'とびばこを しました' },
                     { label: 'なわとび', text: 'なわとびを しました' },
-                    { label: 'たいそう', text: 'たいそうを しました' },
-                    { label: 'ゲームを した', text: 'ゲームを しました' }
+                    { label: 'ダンス', text: 'ダンスを しました' }
                 ]
             },
             {
@@ -434,7 +437,9 @@ export default function App() {
 
     // Firebase Auth Setup
     useEffect(() => {
+        console.log("Neural2 Key Present:", !!GOOGLE_CLOUD_API_KEY);
         const initAuth = async () => {
+
             if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                 await signInWithCustomToken(auth, __initial_auth_token);
             } else {
@@ -625,6 +630,37 @@ export default function App() {
             setTimeout(() => setStatusMessage(''), 2000);
         };
 
+        // Google Cloud TTS (Neural2) Implementation
+        if (GOOGLE_CLOUD_API_KEY) {
+            try {
+                setStatusMessage('Neural2の こえで よんでいます...');
+                const response = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${GOOGLE_CLOUD_API_KEY}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        input: { text: text },
+                        voice: { languageCode: 'ja-JP', name: 'ja-JP-Neural2-B' }, // Neural2 Voice (Female)
+                        audioConfig: { audioEncoding: 'MP3', speakingRate: 0.85, pitch: 2.0 } // Slower and slightly higher pitch for gentler tone
+                    })
+                });
+
+                if (!response.ok) throw new Error("Google Cloud TTS API response was not ok");
+
+                const data = await response.json();
+                if (data.audioContent) {
+                    const audio = new Audio(`data:audio/mp3;base64,${data.audioContent}`);
+                    audio.play();
+                    audio.onended = () => { setIsProcessing(false); setStatusMessage(''); };
+                    return;
+                } else {
+                    throw new Error("No audio content in response");
+                }
+            } catch (error) {
+                console.error("Google Cloud TTS Error, falling back:", error);
+                // Fallback to Gemini or Native
+            }
+        }
+
         if (!API_KEY) {
             console.warn("No API Key found, using browser TTS.");
             speakNative(text);
@@ -666,7 +702,7 @@ export default function App() {
             speakNative(text);
         } finally {
             // setIsProcessing(false) is handled in speakNative or audio.onended/error catch
-            if (!window.speechSynthesis.speaking && !API_KEY) setIsProcessing(false);
+            if (!window.speechSynthesis.speaking && !API_KEY && !GOOGLE_CLOUD_API_KEY) setIsProcessing(false);
         }
     };
 
