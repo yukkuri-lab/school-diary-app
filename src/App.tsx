@@ -942,7 +942,7 @@ export default function App() {
                                 } else {
                                     alert("No AudioContext");
                                 }
-                            }} className="text-xs bg-slate-100 text-slate-400 px-3 py-1 rounded-full flex items-center gap-1"><Volume2 size={12} /> テスト</button>
+                            }} className="text-lg bg-blue-600 text-white px-6 py-3 rounded-full flex items-center gap-2 shadow-lg font-bold my-4"><Volume2 size={20} /> 音声テスト（ここをおしてね）</button>
                         </div>
                         <div className="space-y-4">
                             <div className="flex justify-between items-center px-2"><h3 className="font-black text-slate-400 text-xs tracking-widest uppercase flex items-center gap-2"><History size={14} /> おもいで</h3><button onClick={() => setView('history')} className="text-blue-500 text-sm font-bold">すべてみる</button></div>
