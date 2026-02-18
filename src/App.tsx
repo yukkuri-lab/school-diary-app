@@ -826,7 +826,7 @@ export default function App() {
     };
 
     return (
-        <div className="min-h-screen bg-[#FDFCFB] text-slate-900 font-sans antialiased pb-10 overflow-x-hidden">
+        <div className="min-h-[100dvh] bg-[#FDFCFB] text-slate-900 font-sans antialiased pb-32 overflow-x-hidden">
             {isTracingMode && <TracingCanvas text={finalSentence} onCancel={() => setIsTracingMode(false)} onSpeak={onSpeak} onSave={(data) => { setUserHandwriting(data); setIsTracingMode(false); }} />}
 
             <nav className="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-100 px-6 py-4 flex justify-between items-center shadow-sm">
