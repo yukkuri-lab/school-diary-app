@@ -408,6 +408,8 @@ export default function App() {
     const [diaryEntries, setDiaryEntries] = useState([]);
     const [isTracingMode, setIsTracingMode] = useState(false);
 
+    const audioRef = useRef(new Audio());
+
     useEffect(() => {
         const load = () => speechSynthesis.getVoices();
         speechSynthesis.onvoiceschanged = load;
@@ -617,11 +619,15 @@ export default function App() {
         setIsProcessing(true);
 
         // Pre-initialize Audio to unlock mobile auto-play policy
-        const audio = new Audio();
+        // Pre-initialize Audio to unlock mobile auto-play policy
+        const audio = audioRef.current;
         // Silent mp3 to "bless" the audio element synchronously
         audio.src = 'data:audio/mp3;base64,SUQzBAAAAAABAFRYWFgAAAASAAADbWFqb3JfYnJhbmQAbXA0MgBUWFhYAAAAEQAAA21pbm9yX3ZlcnNpb24AMABUWFhYAAAAHAAAA2NvbXBhdGlibGVfYnJhbmRzAGlzb21tcDQyAFRTU0UAAAADAAADbG1m//uQZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWgAAAA0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABYaW5nAAAAHgAAAAUAAABuAAzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzOhmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZm//uSZAgAAABAAAAAAAAAAABAAAAAAAAAAAAIxAAAAAAAAAAAAIkEAAAAAAA';
-        audio.volume = 0;
-        audio.play().catch(() => { /* Ignore initial verify play errors */ });
+        audio.volume = 0.01; // Non-zero volume to ensure browser treats it as interaction
+        audio.play().catch((e) => {
+            console.warn("Silent play failed", e);
+            // alert(`Silent play error: ${e.message}`); // Optional debug
+        });
 
 
         // Function to use browser's native TTS
@@ -665,6 +671,7 @@ export default function App() {
                     throw new Error("No audio content in response");
                 }
             } catch (error) {
+                alert(`Audio Error (GC): ${error.message}`);
                 console.error("Google Cloud TTS Error, falling back:", error);
                 // Fallback to Gemini or Native
             }
@@ -701,7 +708,10 @@ export default function App() {
                 audio.src = URL.createObjectURL(wavBlob);
                 audio.playbackRate = 0.9; // Gentle tone adjustment
                 audio.volume = 1.0;
-                audio.play();
+                audio.play().catch(e => {
+                    alert(`Audio Play Error: ${e.message}`);
+                    setIsProcessing(false);
+                });
                 audio.onended = () => { setIsProcessing(false); setStatusMessage(''); };
             } else {
                 throw new Error("No audio data in response");
@@ -826,7 +836,7 @@ export default function App() {
     };
 
     return (
-        <div className="min-h-[100dvh] bg-[#FDFCFB] text-slate-900 font-sans antialiased pb-32 overflow-x-hidden">
+        <div className="min-h-[100dvh] bg-[#FDFCFB] text-slate-900 font-sans antialiased pb-48 overflow-x-hidden touch-manipulation">
             {isTracingMode && <TracingCanvas text={finalSentence} onCancel={() => setIsTracingMode(false)} onSpeak={onSpeak} onSave={(data) => { setUserHandwriting(data); setIsTracingMode(false); }} />}
 
             <nav className="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-100 px-6 py-4 flex justify-between items-center shadow-sm">
