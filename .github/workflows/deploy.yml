@@ -1,0 +1,44 @@
+name: GitHub Pages へデプロイ
+
+on:
+  push:
+    branches:
+      - main  # mainブランチへのpush時に自動実行
+
+permissions:
+  contents: write  # gh-pagesブランチへの書き込み権限
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. ソースコードをチェックアウト
+      - name: コードをチェックアウト
+        uses: actions/checkout@v4
+
+      # 2. Node.jsをセットアップ
+      - name: Node.jsをセットアップ
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # 3. 依存パッケージをインストール
+      - name: 依存パッケージをインストール
+        run: npm ci
+
+      # 4. ビルド（GitHub SecretsからAPIキーを注入）
+      - name: アプリをビルド
+        env:
+          VITE_GEMINI_API_KEY: ${{ secrets.VITE_GEMINI_API_KEY }}
+          VITE_GOOGLE_CLOUD_API_KEY: ${{ secrets.VITE_GOOGLE_CLOUD_API_KEY }}
+        run: npm run build
+
+      # 5. GitHub Pagesへデプロイ
+      - name: GitHub Pagesへデプロイ
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          publish_branch: gh-pages
