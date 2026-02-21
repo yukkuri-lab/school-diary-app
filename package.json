@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist"
+    "deploy": "touch dist/.nojekyll && cp dist/index.html dist/404.html && gh-pages -d dist"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.18",
