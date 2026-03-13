@@ -453,6 +453,13 @@ export default function App() {
             source.buffer = buffer;
             source.connect(ctx.destination);
             source.start(0);
+
+            // ＋α ネイティブの音声合成 (SpeechSynthesis) も初回に無音再生してiOSのロックを解除する
+            if (window.speechSynthesis) {
+                const utterance = new SpeechSynthesisUtterance('');
+                utterance.volume = 0; // 無音で再生
+                window.speechSynthesis.speak(utterance);
+            }
         } catch (e) {
             console.error("Audio unlock failed:", e);
         }
@@ -693,21 +700,8 @@ export default function App() {
         setIsProcessing(true);
 
         // ─────────────────────────────────────────────────────────────────────
-        // Step 1: iOS 事前bless（Pre-bless）
-        // ポイント: await を使わずに audio.play() を同期的に呼び出す。
-        // iOSは「ユーザーのタップ操作の同期フレーム内」でplay()が呼ばれていれば
-        // その後の非同期処理後でもaudio要素の再生を許可する。
+        // Step 1: iOS 初回操作でのAudioContextロック解除（Web Audio API）
         // ─────────────────────────────────────────────────────────────────────
-        if (!audioElRef.current) audioElRef.current = new Audio();
-        const audioEl = audioElRef.current;
-
-        // 最小限の無音WAV（データURL）を src にセットして即座にplay()する
-        // ※ awaitしない ← これが最重要。同期的に呼ぶことでiOSが音声再生を許可する
-        const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
-        audioEl.src = SILENT_WAV;
-        audioEl.play().catch(() => { }); // エラーは無視（ここでawaitしないことが重要）
-
-        // AudioContext も unlock（Web Audio API用、Gemini TTS で使用）
         await unlockAudio();
 
         // ─────────────────────────────────────────────────────────────────────
@@ -721,15 +715,77 @@ export default function App() {
             utterance.pitch = 1.0;
             const voice = getPreferredVoice();
             if (voice) utterance.voice = voice;
+            
+            utterance.onend = () => {
+                setIsProcessing(false);
+                setStatusMessage('');
+            };
+            utterance.onerror = () => {
+                setIsProcessing(false);
+                setStatusMessage('');
+            };
+
+            // Safariでは、speechSynthesisが停止状態になっていることがあるためリセット
+            window.speechSynthesis.cancel();
             window.speechSynthesis.speak(utterance);
-            setIsProcessing(false);
-            setTimeout(() => setStatusMessage(''), 2000);
+        };
+
+        // Web Audio APIでArrayBufferを再生する共通ヘルパー（iOS対応の要）
+        const playWithWebAudio = async (base64String: string, isWav: boolean, onEnded: () => void, onError: (e: any) => void) => {
+            if (!audioContextRef.current) {
+                onError(new Error("AudioContext not initialized"));
+                return;
+            }
+            try {
+                const ctx = audioContextRef.current;
+                if (ctx.state === 'suspended') await ctx.resume();
+
+                let arrayBuffer: ArrayBuffer;
+
+                if (isWav) {
+                    // Gemini TTSのPCMデータ(Base64)から一旦WAV Blobを作成し、ArrayBufferへ変換
+                    const binaryString = atob(base64String);
+                    const pcmData = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) pcmData[i] = binaryString.charCodeAt(i);
+                    // ここに渡されるデータは 24kHz 前提
+                    const wavBlob = pcmToWav(pcmData, 24000); 
+                    arrayBuffer = await wavBlob.arrayBuffer();
+                } else {
+                    // Neural2のMP3データ(Base64)から直接ArrayBufferへ変換
+                    const binaryString = atob(base64String);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+                    // 安全に独立したArrayBufferを作成
+                    arrayBuffer = bytes.buffer.slice(0, bytes.length);
+                }
+
+                // decodeAudioDataのiOS Safari対応（コールバックとPromise両対応）
+                const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
+                    const promise = ctx.decodeAudioData(
+                        arrayBuffer,
+                        (decoded) => resolve(decoded),
+                        (error) => reject(error)
+                    );
+                    // 近年のブラウザならPromiseが返るためcatchも拾っておく
+                    if (promise) {
+                        promise.catch((error) => reject(error));
+                    }
+                });
+
+                const source = ctx.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(ctx.destination);
+                source.onended = onEnded;
+                source.start(0);
+            } catch (err) {
+                // decodeAudioData に失敗した場合はネイティブへ流す
+                console.error("decodeAudioData or playback failed:", err);
+                onError(err);
+            }
         };
 
         // ─────────────────────────────────────────────────────────────────────
         // Step 3: Gemini 2.5 Flash Preview TTS（Kore）— 最優先
-        // 文脈を理解してやさしく語りかける自然な声。日記の雰囲気にぴったり。
-        // PCMデータをWAV Blobに変換しbless済みaudioElで再生
         // ─────────────────────────────────────────────────────────────────────
         if (API_KEY) {
             try {
@@ -744,7 +800,6 @@ export default function App() {
                             contents: [{ parts: [{ text }] }],
                             generationConfig: {
                                 responseModalities: ['AUDIO'],
-                                // Kore: 文脈理解でやさしく語りかける自然な響き
                                 speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
                             }
                         })
@@ -756,37 +811,25 @@ export default function App() {
                 const inlineData = geminiData.candidates?.[0]?.content?.parts?.[0]?.inlineData;
                 if (!inlineData?.data) throw new Error('Gemini TTS: 音声データなし');
 
-                // PCMデータをWAVに変換 → Blob → ObjectURL → audioElで再生
-                const binaryString = atob(inlineData.data);
-                const pcmData = new Uint8Array(binaryString.length);
-                for (let i = 0; i < binaryString.length; i++) pcmData[i] = binaryString.charCodeAt(i);
-                const sampleRate = parseInt(inlineData.mimeType.match(/rate=(\d+)/)?.[1] || '24000');
-                const wavBlob = pcmToWav(pcmData, sampleRate);
-                const geminiUrl = URL.createObjectURL(wavBlob);
-                audioEl.src = geminiUrl;
-                audioEl.onended = () => {
-                    URL.revokeObjectURL(geminiUrl);
-                    setIsProcessing(false);
-                    setStatusMessage('');
-                };
-                audioEl.onerror = () => {
-                    console.error('Gemini TTS audioEl再生エラー → Neural2へフォールバック');
-                    URL.revokeObjectURL(geminiUrl);
-                    tryNeural2OrNative(text);
-                };
-                await audioEl.play();
+                await playWithWebAudio(
+                    inlineData.data, // Base64テキストをそのまま渡す
+                    true, // isWav = true
+                    () => { setIsProcessing(false); setStatusMessage(''); },
+                    (e) => {
+                        console.error('Gemini TTS WebAudio再生エラー → Neural2へ', e);
+                        tryNeural2OrNative(text);
+                    }
+                );
                 return;
 
             } catch (error) {
                 console.error('Gemini TTS エラー → Neural2へフォールバック:', error);
-                // Gemini TTSが失敗した場合は Neural2 → ネイティブ の順で試みる
             }
         }
 
         // ─────────────────────────────────────────────────────────────────────
         // Step 4: Google Cloud TTS (Neural2) — Gemini TTSのフォールバック
         // ─────────────────────────────────────────────────────────────────────
-        // Neural2試行 + さらに失敗時はネイティブTTSへ、という共通処理を関数化
         const tryNeural2OrNative = async (txt: string) => {
             if (GOOGLE_CLOUD_API_KEY) {
                 try {
@@ -798,11 +841,11 @@ export default function App() {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 input: { text: txt },
-                                voice: { languageCode: 'ja-JP', name: 'ja-JP-Neural2-B' }, // 女性Neural2ボイス
+                                voice: { languageCode: 'ja-JP', name: 'ja-JP-Neural2-B' },
                                 audioConfig: {
                                     audioEncoding: 'MP3',
-                                    speakingRate: 0.85, // ゆっくりめ
-                                    pitch: 2.0,         // 少し高め・やさしい声
+                                    speakingRate: 0.85,
+                                    pitch: 2.0,
                                 }
                             })
                         }
@@ -812,22 +855,15 @@ export default function App() {
                     const n2Data = await n2Response.json();
                     if (!n2Data.audioContent) throw new Error('Neural2: audioContentが空');
 
-                    // Base64 MP3 → Uint8Array → Blob → ObjectURL → bless済みaudioElで再生
-                    const bytes = Uint8Array.from(atob(n2Data.audioContent), c => c.charCodeAt(0));
-                    const blob = new Blob([bytes], { type: 'audio/mpeg' });
-                    const n2Url = URL.createObjectURL(blob);
-                    audioEl.src = n2Url;
-                    audioEl.onended = () => {
-                        URL.revokeObjectURL(n2Url);
-                        setIsProcessing(false);
-                        setStatusMessage('');
-                    };
-                    audioEl.onerror = () => {
-                        console.error('Neural2 audioEl再生エラー → ネイティブTTSへ');
-                        URL.revokeObjectURL(n2Url);
-                        speakNative(txt);
-                    };
-                    await audioEl.play();
+                    await playWithWebAudio(
+                        n2Data.audioContent, // Base64テキストをそのまま渡す
+                        false, // isWav = false (MP3)
+                        () => { setIsProcessing(false); setStatusMessage(''); },
+                        (e) => {
+                            console.error('Neural2 WebAudio再生エラー → ネイティブTTSへ', e);
+                            speakNative(txt);
+                        }
+                    );
                     return;
 
                 } catch (error) {
